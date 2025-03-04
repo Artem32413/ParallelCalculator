@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,16 +15,13 @@ import (
 var (
 	mu         sync.Mutex
 	Ids        IdExpressions
-	tasks      Task
 	expression Expressions
-	slEx       []byte
-	exp        []Expressions
 	TmpOper    p.TmpOper
 )
-var math_expr = make(map[int]MathExpr)// Все принимаемые выражения
-var m = make(map[int]Expressions)// Резульятаты вычисления
-var ch = make(chan int, 3)  // Канал для воркер пула
-type IdExpressions struct { // Глобальный счетчик Id
+var math_expr = make(map[int]MathExpr) // Все принимаемые выражения
+var m = make(map[int]Expressions)      // Результаты вычисления
+var ch = make(chan int, 3)             // Канал для воркер пула
+type IdExpressions struct {            // Глобальный счетчик Id
 	Id int `json:"id"`
 }
 type MathExpr struct { // принимаемое выражение
@@ -31,8 +29,8 @@ type MathExpr struct { // принимаемое выражение
 }
 
 type Expressions struct { // Результат выражения от Агента
-	Id     int     `json:"id"`
-	Status string  `json:"status"`
+	Id     int    `json:"id"`
+	Status string `json:"status"`
 	Result string `json:"result"`
 }
 type Task struct { // Разбивка на действия Агенту
@@ -47,6 +45,7 @@ func StartServer() {
 	go workerPool()
 	http.HandleFunc("/api/v1/calculate/", calculate)
 	http.HandleFunc("/api/v1/expressions/", expressions)
+	http.HandleFunc("/api/v1/expressions/{id}", expressionsId)
 	http.HandleFunc("/internal/task/", task)
 	http.ListenAndServe(":8080", nil)
 }
@@ -93,23 +92,25 @@ func calculate(w http.ResponseWriter, r *http.Request) {
 func workerPool() {
 	for {
 		idTask := <-ch
-		fmt.Println("Агент начинает вычисление ", idTask)
-		str:= p.Priority(idTask, []byte(math_expr[idTask].Expression))
+		// fmt.Println("Агент начинает вычисление ", idTask)
+		str := p.Priority(idTask, []byte(math_expr[idTask].Expression))
+		mu.Lock()
 		m[idTask] = Expressions{
 			Id:     idTask,
-            Status: "выполнено",
-            Result: str,
+			Status: "выполнено",
+			Result: str,
 		}
+		mu.Unlock()
 		TmpOper = p.Rtmp[TmpOper.Id]
 	}
 }
 func task(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet { // Вернем задание агенту
-		time.Sleep(10*time.Second)
+		time.Sleep(5 * time.Second)
 		ti := GetTask()
 		// fmt.Println(ti)
-		dec := json.NewDecoder(r.Body)
-		fmt.Println(dec)
+		// dec := json.NewDecoder(r.Body)
+		// fmt.Println(dec)
 		w.Header().Set("Content-Type", "application/json")
 		jsonData, err := json.MarshalIndent(ti, "", "    ")
 		if err != nil {
@@ -118,21 +119,19 @@ func task(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Write(jsonData)
 	} else if r.Method == http.MethodPost { // Принимаем ответ от агента
-		fmt.Println("Task", r.Method)
 		var t2 p.R
 		dec := json.NewDecoder(r.Body)
 		if err := dec.Decode(&t2); err != nil {
 			http.Error(w, "Ошибка с декодингом", http.StatusInternalServerError)
 			return
 		}
-		fmt.Println("Получили ответ отагента t2 = ", t2)
 		p.RPerem[t2.Id] = t2
+		expression.Result = t2.Result
 	}
-	defer r.Body.Close() 
+	defer r.Body.Close()
 }
 func GetTask() Task { // Вернет одно действие на расчет
 	var ti Task
-	// fmt.Println("task = ", p.Rtmp)
 	for _, el := range p.Rtmp {
 		ti = Task{
 			Id:             el.Id,
@@ -164,4 +163,31 @@ func expressions(w http.ResponseWriter, r *http.Request) {
 	}
 	// fmt.Println(exp)
 	w.Write(jsonData)
+}
+func expressionsId(w http.ResponseWriter, r *http.Request) {
+	parts := r.URL.Path
+	parts = parts[len("/api/v1/expressions/:"):]
+	id, err := strconv.Atoi(parts)
+	if err != nil {
+		http.Error(w, "Ошибка при конвертации id в число", http.StatusBadRequest)
+		return
+	}
+	if m[id].Id != 0 {
+		idExp := Expressions{
+			Id:     id,
+			Status: m[id].Status,
+			Result: m[id].Result,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		jsonData, err := json.MarshalIndent(idExp, "", "    ")
+		if err != nil {
+			fmt.Println("Ошибка при преобразовании в JSON:", err)
+			return
+		}
+		w.Write(jsonData)
+	} else {
+		http.Error(w, "По такому Id ничего не найдено", http.StatusNotFound)
+		return
+	}
+
 }

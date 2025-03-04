@@ -2,10 +2,9 @@ package priority
 
 import (
 	"errors"
-	"fmt"
-	// "fmt"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type R struct {
@@ -19,8 +18,11 @@ type TmpOper struct {
 	Num2     string `json:"num2"`
 }
 
-var RPerem = make(map[int]R)     // Тут результат от агента
-var Rtmp = make(map[int]TmpOper) // Промежуточные действия
+var (
+	RPerem = make(map[int]R)       // Тут результат от агента
+	Rtmp   = make(map[int]TmpOper) // Промежуточные действия
+	mu     sync.Mutex
+)
 
 func Priority(id int, text []byte) string {
 	expression := string(text)
@@ -32,7 +34,7 @@ func Priority(id int, text []byte) string {
 	var l string
 	var sl []string
 
-	for _, el := range string(text) {
+	for _, el := range expression {
 		curEl = string(el)
 		if curEl == "*" || curEl == "/" || curEl == "-" || curEl == "+" || curEl == "(" || curEl == ")" {
 			if l != "" {
@@ -44,7 +46,6 @@ func Priority(id int, text []byte) string {
 			l += curEl
 		}
 	}
-
 	if l != "" {
 		sl = append(sl, l)
 	}
@@ -65,7 +66,6 @@ func inBracket(id int, sl []string) ([]string, bool) {
 	var bracket1 int
 	var bracket2 int
 	insideBrackets := false
-
 	for i, el := range sl {
 		if el == "(" {
 			bracket1 = i
@@ -83,9 +83,7 @@ func inBracket(id int, sl []string) ([]string, bool) {
 			}
 			bracket2 = i
 			sl[bracket1] = str
-
 			sl = slices.Delete(sl, bracket1+1, bracket2+1)
-
 			insideBrackets = false
 			return sl, true
 		}
@@ -93,6 +91,7 @@ func inBracket(id int, sl []string) ([]string, bool) {
 			q = append(q, el)
 		}
 	}
+
 	return sl, false
 }
 func validateExpression(expression string) error {
@@ -163,15 +162,15 @@ func priority(id int, z []string) ([]string, bool) {
 func Run(id int, z []string, i int) []string {
 	setTmpOper(id, z[i-1], z[i], z[i+1])
 	// Ждать решения
-
+	mu.Lock()
 	for {
 		if _, ok := RPerem[id]; ok {
 			z[i-1] = RPerem[id].Result
 			delete(RPerem, id)
-			fmt.Println("result", z[i-1])
 			break
 		}
 	}
+	mu.Unlock()
 	// fmt.Println(RPerem)
 	d := slices.Delete(z, i, i+2)
 	return d
@@ -180,11 +179,12 @@ func setTmpOper(id int, num1, i, num2 string) { // Добавляем дейст
 	num1 = strings.TrimSpace(num1)
 	i = strings.TrimSpace(i)
 	num2 = strings.TrimSpace(num2)
-	fmt.Println(num1, i, num2)
+	mu.Lock()
 	Rtmp[id] = TmpOper{
 		Id:       id,
 		Num1:     num1,
 		Operator: i,
 		Num2:     num2,
 	}
+	mu.Unlock()
 }
