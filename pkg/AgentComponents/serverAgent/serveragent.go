@@ -1,4 +1,4 @@
-package serveragent
+package serverAgent
 
 import (
 	"bytes"
@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
-	c "parallelcalculator/pkg/AgentComponents/calculation"
 )
 
 type Task struct {
@@ -28,7 +26,8 @@ func AgentStart() {
 }
 
 var text Task
-var ch = make(chan Task, 2)
+var ch = make(chan Task, 5)
+
 func getRequest() {
 	url := "http://localhost:8080/internal/task/"
 	for {
@@ -44,7 +43,6 @@ func getRequest() {
 		if text.Id == 0 {
 			continue
 		}
-		// fmt.Println("Агент добавляет в очередь ", text)
 		ch <- text
 		fmt.Println(text)
 	}
@@ -52,37 +50,27 @@ func getRequest() {
 func workerPool() {
 	for {
 		miniTask := <-ch
-		// fmt.Println("Агент начинает вычисление ", miniTask)
-		time.Sleep(time.Duration(miniTask.Operation_time * int(time.Second)))
-		eq := c.Calcularion(miniTask.Arg1, miniTask.Operation, miniTask.Arg2) // Результат вычисления
-		// fmt.Println("Ответ = ", eq)
-		var res = Result{
-			Id:     miniTask.Id,
-			Result: eq,
-		}
-		postResult(res)
+		time.Sleep(time.Duration(miniTask.Operation_time * int(time.Millisecond)))
+		fmt.Println("Отправляем на расчет", miniTask)
+		go ParalelCalc(miniTask) // Результат вычисления
 	}
 }
-func postResult(res Result) {
-    url := "http://localhost:8080/internal/task/"
-    jsonData, err := json.MarshalIndent(res, "", "    ")
-    if err != nil {
-        panic(err)
-    }
-    // fmt.Println("Отправляем данные:", string(jsonData))
-    
-    r, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-    if err != nil {
-        panic(err)
-    }
-    r.Header.Set("Content-Type", "application/json")
-    
-    client := &http.Client{}
-    response, err := client.Do(r)
-    if err != nil {
-        panic(err)
-    }
-    defer response.Body.Close()
-    
-    // fmt.Println("Ответ от сервера:", response.Status)
+func PostResult(res Result) {
+	url := "http://localhost:8080/internal/task/"
+	jsonData, err := json.MarshalIndent(res, "", "    ")
+	if err != nil {
+		panic(err)
+	}
+	r, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		panic(err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	fmt.Println("Post Запрос ", res)
+	client := &http.Client{}
+	response, err := client.Do(r)
+	if err != nil {
+		panic(err)
+	}
+	defer response.Body.Close()
 }

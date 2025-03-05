@@ -4,24 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
-	"sync"
-	"time"
-
-	p "parallelcalculator/pkg/OrchestratorComponents/Priority"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
 )
 
 var (
 	mu         sync.Mutex
 	Ids        IdExpressions
 	expression Expressions
-	TmpOper    p.TmpOper
+	e          error
 )
 var math_expr = make(map[int]MathExpr) // Все принимаемые выражения
 var m = make(map[int]Expressions)      // Результаты вычисления
-var ch = make(chan int, 3)             // Канал для воркер пула
-type IdExpressions struct {            // Глобальный счетчик Id
+var ch = make(chan int, 5)             // Канал для воркер пула
+
+type IdExpressions struct { // Глобальный счетчик Id
 	Id int `json:"id"`
 }
 type MathExpr struct { // принимаемое выражение
@@ -52,7 +51,6 @@ func StartServer() {
 func calculate(w http.ResponseWriter, r *http.Request) {
 	// Примем выражение для расчета, вернем id и сохраним в мапу => m
 	var mathEx MathExpr
-	// fmt.Println("Калькулятор")
 	// Читаем пришедшее выражение
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(&mathEx); err != nil {
@@ -63,6 +61,13 @@ func calculate(w http.ResponseWriter, r *http.Request) {
 	_, err := json.MarshalIndent(mathEx, "", "    ")
 	if err != nil {
 		http.Error(w, "Ошибка при преобразовании в JSON:", http.StatusInternalServerError)
+		return
+	}
+	expression := string(mathEx.Expression)
+	expression = strings.ReplaceAll(expression, " ", "")
+	if err = ValidateExpression(expression); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	mu.Lock()
@@ -81,67 +86,66 @@ func calculate(w http.ResponseWriter, r *http.Request) {
 	idExpr.Id = Ids.Id
 	jsonDataId, err := json.MarshalIndent(idExpr, "", "    ")
 	if err != nil {
-		panic(err)
+		http.Error(w, "Ошибка при маршелинге:", http.StatusInternalServerError)
+		return
 	}
+	w.WriteHeader(http.StatusCreated)
 	w.Write(jsonDataId)
 	ch <- Ids.Id
 	// Запускаем для расчета
-
-	// fmt.Println(str)
 }
+
 func workerPool() {
 	for {
 		idTask := <-ch
-		// fmt.Println("Агент начинает вычисление ", idTask)
-		str := p.Priority(idTask, []byte(math_expr[idTask].Expression))
-		mu.Lock()
-		m[idTask] = Expressions{
-			Id:     idTask,
-			Status: "выполнено",
-			Result: str,
-		}
-		mu.Unlock()
-		TmpOper = p.Rtmp[TmpOper.Id]
+		go Priority(idTask, []byte(math_expr[idTask].Expression))
 	}
 }
 func task(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet { // Вернем задание агенту
-		time.Sleep(5 * time.Second)
 		ti := GetTask()
-		// fmt.Println(ti)
-		// dec := json.NewDecoder(r.Body)
-		// fmt.Println(dec)
 		w.Header().Set("Content-Type", "application/json")
 		jsonData, err := json.MarshalIndent(ti, "", "    ")
 		if err != nil {
 			http.Error(w, "Ошибка при преобразовании в JSON:", http.StatusInternalServerError)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
 		w.Write(jsonData)
+
 	} else if r.Method == http.MethodPost { // Принимаем ответ от агента
-		var t2 p.R
+		var t2 R
 		dec := json.NewDecoder(r.Body)
 		if err := dec.Decode(&t2); err != nil {
 			http.Error(w, "Ошибка с декодингом", http.StatusInternalServerError)
 			return
 		}
-		p.RPerem[t2.Id] = t2
-		expression.Result = t2.Result
+		if t2.Id == 0 {
+			http.Error(w, "Некорректный ID задачи", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Println("Начало блока Task")
+		mux.Lock()
+		RPerem[t2.Id] = t2
+		mux.Unlock()
+		fmt.Println("Конец блока Task")
 	}
 	defer r.Body.Close()
 }
+
 func GetTask() Task { // Вернет одно действие на расчет
 	var ti Task
-	for _, el := range p.Rtmp {
+	for _, el := range Rtmp {
 		ti = Task{
 			Id:             el.Id,
 			Arg1:           el.Num1,
 			Arg2:           el.Num2,
 			Operation:      el.Operator,
-			Operation_time: 1,
+			Operation_time: TimeSleep(el.Operator),
 		}
 
-		delete(p.Rtmp, el.Id) // Удаляем из map
+		delete(Rtmp, el.Id) // Удаляем из map
 
 		return ti // Возвращаем рандомное действие
 	}
@@ -149,19 +153,22 @@ func GetTask() Task { // Вернет одно действие на расче�
 }
 func expressions(w http.ResponseWriter, r *http.Request) {
 	var exp []Expressions
+	mux.Lock()
 	for _, el := range m {
 		exp = append(exp, el)
 	}
+	mux.Unlock()
 	sort.Slice(exp, func(i, j int) bool {
 		return exp[i].Id < exp[j].Id
 	})
 	w.Header().Set("Content-Type", "application/json")
 	jsonData, err := json.MarshalIndent(exp, "", "    ")
 	if err != nil {
-		fmt.Println("Ошибка при преобразовании в JSON:", err)
+		http.Error(w, "Ошибка при преобразовании в JSON:", http.StatusInternalServerError)
 		return
 	}
 	// fmt.Println(exp)
+	w.WriteHeader(http.StatusOK)
 	w.Write(jsonData)
 }
 func expressionsId(w http.ResponseWriter, r *http.Request) {
@@ -181,9 +188,10 @@ func expressionsId(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		jsonData, err := json.MarshalIndent(idExp, "", "    ")
 		if err != nil {
-			fmt.Println("Ошибка при преобразовании в JSON:", err)
+			http.Error(w, "Ошибка при преобразовании в JSON:", http.StatusInternalServerError)
 			return
 		}
+		w.WriteHeader(http.StatusOK)
 		w.Write(jsonData)
 	} else {
 		http.Error(w, "По такому Id ничего не найдено", http.StatusNotFound)

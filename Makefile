@@ -3,14 +3,13 @@
 all: app1 app2  
 
 app1:  
-	@echo "Запуск приложения 1"  
+	@echo "Запуск Оркестратора"  
 	@go run cmd/Orchestrator/main.go &  
 
 app2:  
-	@echo "Запуск приложения 2"  
+	@echo "Запуск Агента"  
 	@go run cmd/Agent/main.go &  
 
-# Дожидаемся завершения обеих задач  
 wait:  
 	@wait  
 

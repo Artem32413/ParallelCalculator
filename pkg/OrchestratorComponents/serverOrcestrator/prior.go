@@ -1,7 +1,7 @@
-package priority
+package serverorcestrator
 
 import (
-	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -19,17 +19,13 @@ type TmpOper struct {
 }
 
 var (
-	RPerem = make(map[int]R)       // Тут результат от агента
-	Rtmp   = make(map[int]TmpOper) // Промежуточные действия
-	mu     sync.Mutex
+	mux sync.Mutex
+	RPerem = make(map[int]R) // Тут результат от агента
 )
-
-func Priority(id int, text []byte) string {
+var Rtmp map[int]TmpOper = make(map[int]TmpOper) // Промежуточные действия
+func Priority(id int, text []byte) {
 	expression := string(text)
 	expression = strings.ReplaceAll(expression, " ", "")
-	if err := validateExpression(expression); err != nil {
-		panic(err)
-	}
 	var curEl string
 	var l string
 	var sl []string
@@ -58,8 +54,14 @@ func Priority(id int, text []byte) string {
 		}
 	}
 	str, _ := mainCalc(id, sl)
-	// fmt.Println(str)
-	return str
+	fmt.Println(str)
+	mu.Lock()
+	m[id] = Expressions{
+		Id:     id,
+		Status: "выполнено",
+		Result: str,
+	}
+	mu.Unlock()
 }
 func inBracket(id int, sl []string) ([]string, bool) {
 	var q []string
@@ -94,49 +96,7 @@ func inBracket(id int, sl []string) ([]string, bool) {
 
 	return sl, false
 }
-func validateExpression(expression string) error {
-	lastWasDigit := false
-	parensCount := 0
 
-	for i, char := range expression {
-		if (char >= '0' && char <= '9') || char == '.' {
-			lastWasDigit = true
-		} else {
-			if lastWasDigit == false {
-				if char != '(' {
-					return errors.New("некорректный символ перед: " + string(char))
-				}
-			}
-			switch char {
-			case '+', '-', '*', '/':
-				if i == 0 || !lastWasDigit {
-					return errors.New("некорректный оператор: " + string(char))
-				}
-				lastWasDigit = false
-
-			case '(':
-				parensCount++
-
-			case ')':
-				parensCount--
-				if parensCount < 0 {
-					return errors.New("несоответствующие скобки")
-				}
-
-			default:
-				return errors.New("неизвестный символ: " + string(char))
-			}
-		}
-	}
-
-	if parensCount != 0 {
-		return errors.New("несоответствующие скобки")
-	}
-	// if !lastWasDigit {
-	// 	return errors.New("выражение должно заканчиваться цифрой")
-	// }
-	return nil
-}
 func mainCalc(id int, k []string) (string, bool) {
 	var ok bool
 	for {
@@ -162,16 +122,19 @@ func priority(id int, z []string) ([]string, bool) {
 func Run(id int, z []string, i int) []string {
 	setTmpOper(id, z[i-1], z[i], z[i+1])
 	// Ждать решения
-	mu.Lock()
 	for {
-		if _, ok := RPerem[id]; ok {
-			z[i-1] = RPerem[id].Result
-			delete(RPerem, id)
+		mux.Lock() 
+		result, ok := RPerem[id]
+		mux.Unlock() 
+
+		if ok { 
+			z[i-1] = result.Result 
+			mux.Lock() 
+			delete(RPerem, id) 
+			mux.Unlock()
 			break
 		}
 	}
-	mu.Unlock()
-	// fmt.Println(RPerem)
 	d := slices.Delete(z, i, i+2)
 	return d
 }
@@ -179,12 +142,12 @@ func setTmpOper(id int, num1, i, num2 string) { // Добавляем дейст
 	num1 = strings.TrimSpace(num1)
 	i = strings.TrimSpace(i)
 	num2 = strings.TrimSpace(num2)
-	mu.Lock()
+	mux.Lock()
 	Rtmp[id] = TmpOper{
 		Id:       id,
 		Num1:     num1,
 		Operator: i,
 		Num2:     num2,
 	}
-	mu.Unlock()
+	mux.Unlock()
 }
